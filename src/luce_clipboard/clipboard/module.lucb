@@ -1,0 +1,53 @@
+#==============================================================================================
+#
+#   clipboard - The desktop text clipboard
+#
+#   DESCRIPTION:
+#       Desktop text clipboard. Values returned to Base or Luce own their bytes. Access
+#       belongs to the UI thread; clipboard contention is a recoverable error.
+#
+#==============================================================================================
+
+import c
+import interop
+import memory
+import platform
+import strings
+import thread
+import utf8
+import window
+import windows_text
+## Clipboard access failed, or its text was rejected.
+pub let failed: ErrorCode = ErrorCode.package(117)
+let text_limit: usize = 1048576
+
+## The clipboard's text, owning its bytes; fails off the UI thread or on an unsupported target.
+pub func read_text() -> interop.Owned[str]!:
+    try check_access()
+    if platform.macos:
+        return try mac_read()
+    if platform.windows:
+        return try win_read()
+    error(window.unsupported, "the desktop clipboard is unavailable on this target")
+
+## Publish `text` (valid UTF-8, no NUL, at most 1 MiB) to the clipboard from the UI thread.
+pub func write_text(text: str) -> !:
+    try check_access()
+    if text.length > text_limit or not utf8.valid(text.bytes):
+        error(failed, "clipboard text must be valid UTF-8 within 1 MiB")
+    for byte in text.bytes:
+        if byte == 0:
+            error(failed, "clipboard text cannot contain NUL")
+    if platform.macos:
+        try mac_write(text)
+        return
+    if platform.windows:
+        try win_write(text)
+        return
+    error(window.unsupported, "the desktop clipboard is unavailable on this target")
+
+func check_access() -> !:
+    if not window.supported():
+        error(window.unsupported, "the desktop clipboard is unavailable on this target")
+    if not thread.is_main():
+        error(interop.wrong_thread, "clipboard access requires the UI thread")

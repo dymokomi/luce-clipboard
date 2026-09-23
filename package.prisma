@@ -1,0 +1,33 @@
+#prisma 4.0
+def package "luce-clipboard" {
+    str owner = "dymokomi"
+    str version = "0.1.0"
+    str kind = "package"
+    str language = "luce-base"
+    str description = "The system clipboard for Luce programs: read and write text on macOS and Windows."
+    str readme = "README.md"
+
+    def export "clipboard" {
+        str module = "luce_clipboard.clipboard"
+    }
+
+    def dependency "luce-std" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-std"
+    }
+
+    def dependency "luce-window" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-window"
+    }
+
+    def native "macos" {
+        list frameworks = ["AppKit", "Foundation"]
+    }
+
+    def native "windows" {
+        list libraries = ["user32"]
+    }
+}

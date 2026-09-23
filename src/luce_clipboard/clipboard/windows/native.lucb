@@ -1,0 +1,71 @@
+#==============================================================================================
+#
+#   native - The Windows clipboard backend
+#
+#   DESCRIPTION:
+#       CF_UNICODETEXT storage transfers to the OS only after SetClipboardData succeeds.
+#       Writing requires a window owned by the active UI thread; reading does not.
+#
+#==============================================================================================
+
+extern func GetActiveWindow() -> void*?
+extern func OpenClipboard(owner: void*?) -> i32
+extern func CloseClipboard() -> i32
+extern func EmptyClipboard() -> i32
+extern func IsClipboardFormatAvailable(format: u32) -> i32
+extern func GetClipboardData(format: u32) -> void*?
+extern func SetClipboardData(format: u32, data: void*) -> void*?
+extern func GlobalAlloc(flags: u32, bytes: usize) -> void*?
+extern func GlobalFree(storage: void*) -> void*?
+extern func GlobalLock(storage: void*) -> void*?
+extern func GlobalUnlock(storage: void*) -> i32
+extern func GlobalSize(storage: void*) -> usize
+let unicode_text: u32 = 13
+
+func win_read() -> interop.Owned[str]!:
+    if OpenClipboard(GetActiveWindow()) == 0:
+        error(failed, "the clipboard is busy")
+    defer discard(CloseClipboard())
+    if IsClipboardFormatAvailable(unicode_text) == 0:
+        return try interop.copy_text("")
+    let storage = GetClipboardData(unicode_text) else error(failed, "clipboard text is unavailable")
+    let capacity = GlobalSize(storage) // 2
+    let address = GlobalLock(storage) else error(failed, "clipboard text cannot be read")
+    defer discard(GlobalUnlock(storage))
+    let wide = (u16*)address
+    var length: usize = 0
+    while length < capacity and length <= text_limit and wide[length] != 0:
+        length += 1
+    if length == capacity or length > text_limit:
+        error(failed, "clipboard text is unterminated or exceeds the limit")
+    with memory.heap:
+        let value = try windows_text.narrow(u16[](wide, length), failed)
+        defer free(u8[]((u8*)value.bytes.data, value.length + 1))
+        if value.length > text_limit:
+            error(failed, "clipboard text exceeds 1 MiB")
+        return try interop.copy_text(value)
+
+func win_write(text: str) -> !:
+    let owner = GetActiveWindow() else error(failed, "clipboard writing requires an active application window")
+    with memory.heap:
+        var terminated = try strings.Builder.create(text.length)
+        defer terminated.destroy()
+        try terminated.put(text)
+        let wide = try windows_text.wide((c.str)terminated.view(), failed)
+        defer free(wide)
+        let storage = GlobalAlloc(2, wide.length * 2) else error(failed, "could not allocate clipboard storage")
+        var published = false
+        defer free_unpublished(storage, &published)
+        let address = GlobalLock(storage) else error(failed, "could not lock clipboard storage")
+        memory.copy(u8[]((u8*)address, wide.length * 2), u8[]((u8*)wide.data, wide.length * 2), wide.length * 2)
+        discard(GlobalUnlock(storage))
+        if OpenClipboard(owner) == 0:
+            error(failed, "the clipboard is busy")
+        defer discard(CloseClipboard())
+        if EmptyClipboard() == 0 or SetClipboardData(unicode_text, storage) == none:
+            error(failed, "could not publish clipboard text")
+        published = true
+
+func free_unpublished(storage: void*, published: bool*):
+    if not *published:
+        discard(GlobalFree(storage))
