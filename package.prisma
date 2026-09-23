@@ -24,10 +24,10 @@ def package "luce-clipboard" {
     }
 
     def native "macos" {
-        list frameworks = ["AppKit", "Foundation"]
+        str[] frameworks = ["AppKit", "Foundation"]
     }
 
     def native "windows" {
-        list libraries = ["user32"]
+        str[] libraries = ["user32"]
     }
 }
