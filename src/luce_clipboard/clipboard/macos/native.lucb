@@ -3,8 +3,10 @@
 #   native - The macOS pasteboard clipboard backend
 #
 #   DESCRIPTION:
-#       The pasteboard owns published text. An autorelease pool bounds native temporaries
-#       even when a Base caller uses the clipboard outside the application event loop.
+#       The pasteboard owns published text and images. An autorelease pool bounds native
+#       temporaries even when a Base caller uses the clipboard outside the application
+#       event loop. Images are read as PNG, else TIFF (what screenshots and most macOS
+#       programs publish), and written as PNG.
 #
 #==============================================================================================
 
@@ -13,6 +15,8 @@ extern func sel_registerName(name: c.str) -> void*
 extern func objc_autoreleasePoolPush() -> void*
 extern func objc_autoreleasePoolPop(pool: void*)
 extern var NSPasteboardTypeString: void*
+extern var NSPasteboardTypePNG: void*
+extern var NSPasteboardTypeTIFF: void*
 extern func msg_object as "objc_msgSend"(object: void*, selector: void*) -> void*?
 extern func msg_typed as "objc_msgSend"(object: void*, selector: void*, format: void*) -> void*?
 extern func msg_count as "objc_msgSend"(object: void*, selector: void*) -> i64
@@ -20,6 +24,8 @@ extern func msg_size as "objc_msgSend"(object: void*, selector: void*, encoding:
 extern func msg_init as "objc_msgSend"(object: void*, selector: void*, bytes: const u8*, size: usize, encoding: u64) -> void*?
 extern func msg_write as "objc_msgSend"(object: void*, selector: void*, text: void*, format: void*) -> bool
 extern func msg_release as "objc_msgSend"(object: void*, selector: void*)
+extern func msg_bytes as "objc_msgSend"(object: void*, selector: void*) -> const u8*?
+extern func msg_data as "objc_msgSend"(object: void*, selector: void*, bytes: const u8*, size: usize) -> void*?
 
 func mac_board() -> void*!:
     let native_type = objc_getClass("NSPasteboard") else error(failed, "AppKit pasteboard is unavailable")
@@ -47,3 +53,28 @@ func mac_write(text: str) -> !:
     discard(msg_count(board, sel_registerName("clearContents")))
     if not msg_write(board, sel_registerName("setString:forType:"), value, NSPasteboardTypeString):
         error(failed, "could not publish clipboard text")
+
+func mac_read_image() -> ClipboardImage?!:
+    let pool = objc_autoreleasePoolPush()
+    defer objc_autoreleasePoolPop(pool)
+    let board = try mac_board()
+    let data = msg_typed(board, sel_registerName("dataForType:"), NSPasteboardTypePNG) else msg_typed(board, sel_registerName("dataForType:"), NSPasteboardTypeTIFF) else return none
+    let length = (usize)msg_count(data, sel_registerName("length"))
+    if length == 0 or length > image_limit:
+        error(failed, "the clipboard image is empty or too large")
+    let bytes = msg_bytes(data, sel_registerName("bytes")) else error(failed, "the clipboard image cannot be read")
+    let encoded = try alloc u8[length] in memory.heap
+    memory.copy(encoded, u8[]((u8*)bytes, length), length)
+    var empty: u8[]
+    return ClipboardImage(encoded = encoded, rgba = empty, width = 0, height = 0)
+
+func mac_write_image(png: const u8[]) -> !:
+    let pool = objc_autoreleasePoolPush()
+    defer objc_autoreleasePoolPop(pool)
+    let board = try mac_board()
+    let native_type = objc_getClass("NSData") else error(failed, "Foundation data is unavailable")
+    let data = msg_data(native_type, sel_registerName("dataWithBytes:length:"), png.data, png.length) else error(failed, "could not hold the clipboard image")
+    discard(msg_count(board, sel_registerName("clearContents")))
+    if not msg_write(board, sel_registerName("setData:forType:"), data, NSPasteboardTypePNG):
+        error(failed, "could not publish the clipboard image")
+

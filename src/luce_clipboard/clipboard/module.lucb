@@ -1,10 +1,12 @@
 #==============================================================================================
 #
-#   clipboard - The desktop text clipboard
+#   clipboard - The desktop clipboard: text and images
 #
 #   DESCRIPTION:
-#       Desktop text clipboard. Values returned to Base or Luce own their bytes. Access
-#       belongs to the UI thread; clipboard contention is a recoverable error.
+#       Desktop text and image clipboard. Values returned to Base or Luce own their bytes.
+#       Access belongs to the UI thread; clipboard contention is a recoverable error.
+#       Images go out as PNG (and on Windows also as a bitmap, which most programs there
+#       read) and come back as PNG or TIFF bytes, or as RGBA pixels from a bitmap.
 #
 #==============================================================================================
 
@@ -17,6 +19,7 @@ import thread
 import utf8
 import window
 import windows_text
+from luce_clipboard.dib import dib_to_bitmap, bitmap_to_dib
 ## Clipboard access failed, or its text was rejected.
 pub let failed: ErrorCode = ErrorCode.package(117)
 let text_limit: usize = 1048576
@@ -43,6 +46,51 @@ pub func write_text(text: str) -> !:
         return
     if platform.windows:
         try win_write(text)
+        return
+    error(window.unsupported, "the desktop clipboard is unavailable on this target")
+
+## An image read from the clipboard: encoded bytes (PNG or TIFF, told apart by
+## their signature), or 8-bit sRGB RGBA pixels, top-down, when the clipboard held
+## a bitmap. Both are heap storage the holder frees with `destroy`.
+pub struct ClipboardImage:
+    pub var encoded: u8[]
+    pub var rgba: u8[]
+    pub var width: u32
+    pub var height: u32
+
+    pub mutating func destroy():
+        if self.encoded.length > 0:
+            free(self.encoded) in memory.heap
+        if self.rgba.length > 0:
+            free(self.rgba) in memory.heap
+        var empty: u8[]
+        self.encoded = empty
+        self.rgba = empty
+
+## The largest image the clipboard takes or gives, in bytes either way.
+let image_limit: usize = 536870912
+
+## The clipboard's image, or none when it holds none; UI thread only.
+pub func read_image() -> ClipboardImage?!:
+    try check_access()
+    if platform.macos:
+        return try mac_read_image()
+    if platform.windows:
+        return try win_read_image()
+    error(window.unsupported, "the desktop clipboard is unavailable on this target")
+
+## Publish an image, replacing what the clipboard held: `png` is it encoded, and
+## `rgba` its 8-bit sRGB RGBA pixels, `width` by `height`, top-down, for
+## programs that read bitmaps (Windows). UI thread only.
+pub func write_image(png: const u8[], width: u32, height: u32, rgba: const u8[]) -> !:
+    try check_access()
+    if png.length == 0 or png.length > image_limit or width == 0 or height == 0 or (usize)width * (usize)height * 4 != rgba.length:
+        error(failed, "a clipboard image needs its PNG and width * height RGBA pixels")
+    if platform.macos:
+        try mac_write_image(png)
+        return
+    if platform.windows:
+        try win_write_image(png, width, height, rgba)
         return
     error(window.unsupported, "the desktop clipboard is unavailable on this target")
 

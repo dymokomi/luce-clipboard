@@ -4,7 +4,9 @@
 #
 #   DESCRIPTION:
 #       CF_UNICODETEXT storage transfers to the OS only after SetClipboardData succeeds.
-#       Writing requires a window owned by the active UI thread; reading does not.
+#       Writing requires a window owned by the active UI thread; reading does not. Images
+#       go out as the registered "PNG" format (which Photoshop, browsers and Office read)
+#       and as CF_DIB; they come back from "PNG" when present, else from CF_DIB.
 #
 #==============================================================================================
 
@@ -20,7 +22,9 @@ extern func GlobalFree(storage: void*) -> void*?
 extern func GlobalLock(storage: void*) -> void*?
 extern func GlobalUnlock(storage: void*) -> i32
 extern func GlobalSize(storage: void*) -> usize
+extern func RegisterClipboardFormatA(name: c.str) -> u32
 let unicode_text: u32 = 13
+let device_independent_bitmap: u32 = 8
 
 func win_read() -> interop.Owned[str]!:
     if OpenClipboard(GetActiveWindow()) == 0:
@@ -69,3 +73,69 @@ func win_write(text: str) -> !:
 func free_unpublished(storage: void*, published: bool*):
     if not *published:
         discard(GlobalFree(storage))
+
+func png_format() -> u32!:
+    let registered = RegisterClipboardFormatA("PNG")
+    if registered == 0:
+        error(failed, "the PNG clipboard format is unavailable")
+    return registered
+
+## A copy of the clipboard's storage in format `kind`, heap bytes, or none.
+func win_copy(kind: u32) -> u8[]?!:
+    if IsClipboardFormatAvailable(kind) == 0:
+        return none
+    let storage = GetClipboardData(kind) else return none
+    let length = GlobalSize(storage)
+    if length == 0 or length > image_limit:
+        error(failed, "the clipboard image is empty or too large")
+    let address = GlobalLock(storage) else error(failed, "the clipboard image cannot be read")
+    defer discard(GlobalUnlock(storage))
+    let bytes = try alloc u8[length] in memory.heap
+    memory.copy(bytes, u8[]((u8*)address, length), length)
+    return bytes
+
+func win_read_image() -> ClipboardImage?!:
+    let png = try png_format()
+    if OpenClipboard(GetActiveWindow()) == 0:
+        error(failed, "the clipboard is busy")
+    defer discard(CloseClipboard())
+    if let encoded = try win_copy(png):
+        var empty: u8[]
+        return ClipboardImage(encoded = encoded, rgba = empty, width = 0, height = 0)
+    let dib = try win_copy(device_independent_bitmap) else return none
+    defer free(dib) in memory.heap
+    let bitmap = try dib_to_bitmap(dib)
+    var empty: u8[]
+    return ClipboardImage(encoded = empty, rgba = bitmap.rgba, width = bitmap.width, height = bitmap.height)
+
+## Global storage holding `bytes`, for SetClipboardData.
+func global_copy(bytes: const u8[]) -> void*!:
+    let storage = GlobalAlloc(2, bytes.length) else error(failed, "could not allocate clipboard storage")
+    if let address = GlobalLock(storage):
+        memory.copy(u8[]((u8*)address, bytes.length), bytes, bytes.length)
+        discard(GlobalUnlock(storage))
+        return storage
+    discard(GlobalFree(storage))
+    error(failed, "could not lock clipboard storage")
+
+func win_write_image(png: const u8[], width: u32, height: u32, rgba: const u8[]) -> !:
+    let owner = GetActiveWindow() else error(failed, "clipboard writing requires an active application window")
+    let png_id = try png_format()
+    let dib = try bitmap_to_dib(width, height, rgba)
+    defer free(dib) in memory.heap
+    let encoded_storage = try global_copy(png)
+    var encoded_published = false
+    defer free_unpublished(encoded_storage, &encoded_published)
+    let bitmap_storage = try global_copy(dib)
+    var bitmap_published = false
+    defer free_unpublished(bitmap_storage, &bitmap_published)
+    if OpenClipboard(owner) == 0:
+        error(failed, "the clipboard is busy")
+    defer discard(CloseClipboard())
+    if EmptyClipboard() == 0 or SetClipboardData(png_id, encoded_storage) == none:
+        error(failed, "could not publish the clipboard image")
+    encoded_published = true
+    if SetClipboardData(device_independent_bitmap, bitmap_storage) == none:
+        error(failed, "could not publish the clipboard bitmap")
+    bitmap_published = true
+

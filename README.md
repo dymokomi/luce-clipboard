@@ -1,12 +1,12 @@
 # luce-clipboard
 
-The system clipboard: read and write text.
+The system clipboard: read and write text and images.
 
 ## Modules
 
 | import | what it holds |
 | --- | --- |
-| `import clipboard` | The desktop text clipboard |
+| `import clipboard` | The desktop clipboard: text, and images as PNG (plus a bitmap on Windows) |
 
 ## Using it
 

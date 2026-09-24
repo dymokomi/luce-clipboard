@@ -1,0 +1,118 @@
+#==============================================================================================
+#
+#   dib - Windows device-independent bitmaps
+#
+#   DESCRIPTION:
+#       The CF_DIB layout Windows programs exchange images in: a 40-byte BITMAPINFOHEADER,
+#       then rows of 32-bit BGRA (or 24-bit BGR) pixels, bottom-up unless the height is
+#       negative, each row padded to four bytes. Pure conversions, tested on every host.
+#
+#==============================================================================================
+
+import memory
+
+## A bitmap the clipboard held is malformed, unsupported or too large.
+pub let malformed: ErrorCode = ErrorCode.package(118)
+
+## Top-down 8-bit RGBA pixels, `width` by `height`, heap storage the holder frees.
+pub struct Bitmap:
+    pub var width: u32
+    pub var height: u32
+    pub var rgba: u8[]
+
+## The largest bitmap taken, in bytes of RGBA.
+let rgba_limit: usize = 536870912
+let info_size: usize = 40
+
+func read_u16(bytes: const u8[], at: usize) -> u32:
+    return (u32)bytes[at] | ((u32)bytes[at + 1] << 8)
+
+func read_u32(bytes: const u8[], at: usize) -> u32:
+    return read_u16(bytes, at) | (read_u16(bytes, at + 2) << 16)
+
+func write_u32(bytes: u8[], at: usize, value: u32):
+    for index in 0..<(usize)4:
+        bytes[at + index] = (u8)((value >> (u32)(index * 8)) & 0xff)
+
+## A bitmap's pixels as top-down RGBA: 32-bit BGRA (uncompressed or with the
+## standard masks) or 24-bit BGR, whose alpha is opaque. A 32-bit bitmap whose
+## alpha is all zero is taken as opaque too, as most writers leave it unset.
+pub func dib_to_bitmap(dib: const u8[]) -> Bitmap!:
+    if dib.length < info_size or read_u32(dib, 0) < (u32)info_size:
+        error(malformed, "the clipboard bitmap has no header")
+    let header = (usize)read_u32(dib, 0)
+    let width = read_u32(dib, 4)
+    let raw_height = read_u32(dib, 8)
+    let top_down = (raw_height & 0x80000000) != 0
+    let height = (~raw_height +% 1) if top_down else raw_height
+    let bits = read_u16(dib, 14)
+    let compression = read_u32(dib, 16)
+    if width == 0 or height == 0 or width > 65536 or height > 65536 or (bits != 32 and bits != 24) or (compression != 0 and compression != 3):
+        error(malformed, "the clipboard bitmap is not 24- or 32-bit RGB")
+    # Bit-field masks follow a 40-byte header when it says so; the pixels after them.
+    let masks: usize = 12 if compression == 3 and header == info_size else 0
+    let stride = ((usize)width * (usize)bits // 8 + 3) & ~(usize)3
+    let start = header + masks
+    if start + stride * (usize)height > dib.length or (usize)width * (usize)height * 4 > rgba_limit:
+        error(malformed, "the clipboard bitmap is truncated or too large")
+    let rgba = try alloc u8[(usize)width * (usize)height * 4] in memory.heap
+    var any_alpha = false
+    for row in 0..<(usize)height:
+        let source = start + stride * (row if top_down else (usize)height - 1 - row)
+        for column in 0..<(usize)width:
+            let pixel = source + column * (usize)bits // 8
+            let to = (row * (usize)width + column) * 4
+            rgba[to] = dib[pixel + 2]
+            rgba[to + 1] = dib[pixel + 1]
+            rgba[to + 2] = dib[pixel]
+            rgba[to + 3] = dib[pixel + 3] if bits == 32 else 255
+            if bits == 32 and dib[pixel + 3] != 0:
+                any_alpha = true
+    if bits == 32 and not any_alpha:
+        for index in 0..<(usize)width * (usize)height:
+            rgba[index * 4 + 3] = 255
+    return Bitmap(width = width, height = height, rgba = rgba)
+
+## A 32-bit top-down BGRA bitmap of `width` by `height` RGBA pixels, heap storage.
+pub func bitmap_to_dib(width: u32, height: u32, rgba: const u8[]) -> u8[]!:
+    let count = (usize)width * (usize)height
+    let dib = try alloc u8[info_size + count * 4] in memory.heap
+    for index in 0..<info_size:
+        dib[index] = 0
+    write_u32(dib, 0, (u32)info_size)
+    write_u32(dib, 4, width)
+    write_u32(dib, 8, ~height +% 1)
+    dib[12] = 1
+    dib[14] = 32
+    write_u32(dib, 20, (u32)(count * 4))
+    for index in 0..<count:
+        dib[info_size + index * 4] = rgba[index * 4 + 2]
+        dib[info_size + index * 4 + 1] = rgba[index * 4 + 1]
+        dib[info_size + index * 4 + 2] = rgba[index * 4]
+        dib[info_size + index * 4 + 3] = rgba[index * 4 + 3]
+    return dib
+
+test "bitmaps round-trip and 24-bit, bottom-up ones read":
+    let pixels: u8[8] = [255, 0, 0, 255, 0, 0, 255, 128]
+    let dib = try bitmap_to_dib(2, 1, pixels)
+    defer free(dib) in memory.heap
+    let image = try dib_to_bitmap(dib)
+    defer free(image.rgba) in memory.heap
+    assert(image.width == 2 and image.height == 1)
+    for index in 0..<(usize)8:
+        assert(image.rgba[index] == pixels[index])
+    # A 1x2 bottom-up 24-bit bitmap: blue on the first row stored, the image's bottom.
+    var bottom_up: u8[48]
+    for index in 0..<(usize)48:
+        bottom_up[index] = 0
+    write_u32(bottom_up, 0, 40)
+    write_u32(bottom_up, 4, 1)
+    write_u32(bottom_up, 8, 2)
+    bottom_up[12] = 1
+    bottom_up[14] = 24
+    bottom_up[40] = 255
+    bottom_up[45] = 255
+    let read = try dib_to_bitmap(bottom_up)
+    defer free(read.rgba) in memory.heap
+    assert(read.height == 2 and read.rgba[0] == 0 and read.rgba[1] == 255 and read.rgba[3] == 255)
+    assert(read.rgba[4] == 0 and read.rgba[6] == 255)
