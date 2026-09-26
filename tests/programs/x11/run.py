@@ -5,6 +5,7 @@ a payload past one INCR step, and xclip on either side when it is installed."""
 from pathlib import Path
 import os
 import platform
+import select
 import shutil
 import subprocess
 import sys
@@ -33,9 +34,17 @@ env["LUCE_BASE"] = str(compiler)
 def serve(program, mode, payload):
     """Start a process owning the clipboard with `payload`; it answers until killed."""
     process = subprocess.Popen([program, mode, payload], env=env, stdout=subprocess.PIPE, text=True)
+    ready, _, _ = select.select([process.stdout], [], [], 30)
+    if not ready:
+        process.kill()
+        raise AssertionError(f"{mode}: no answer within 30 s (status {process.poll()})")
     line = process.stdout.readline().strip()
-    assert line == "ready", f"{mode} did not take the clipboard: {line!r}"
+    assert line == "ready", f"{mode} did not take the clipboard: {line!r} (status {process.poll()})"
     return process
+
+
+def step(name):
+    print(f"  {name}", flush=True)
 
 
 def stop(process):
@@ -48,7 +57,9 @@ try:
         work = Path(temporary)
         for flags in (["--native"], ["--native", "--release"], ["--backend=c"]):
             program = str(work / "clip")
-            subprocess.run([compiler, "build", root / "tests/programs/x11/main.lucb", *flags, "-o", program], cwd=root, env=env, check=True)
+            step("build " + " ".join(flags))
+            subprocess.run([compiler, "build", root / "tests/programs/x11/main.lucb", *flags, "-o", program], cwd=root, env=env, check=True, timeout=600)
+            step("text")
             # Text, including what Latin-1 lacks, through a second process.
             text = "Luce clipboard: é € 日本 ✓"
             source = work / "text.in"
@@ -63,6 +74,7 @@ try:
                     assert out.decode("utf-8") == text, out
             finally:
                 stop(owner)
+            step("incr")
             # A payload past one INCR step (256 KiB) both ways.
             large = ("0123456789abcdef" * 40000)[:600000]
             source.write_bytes(large.encode())
@@ -72,6 +84,7 @@ try:
                 assert pasted.read_bytes().decode() == large
             finally:
                 stop(owner)
+            step("image")
             # An image as image/png, bytes unchanged.
             png = bytes([137, 80, 78, 71, 13, 10, 26, 10]) + os.urandom(300000)
             image = work / "image.png"
@@ -83,8 +96,10 @@ try:
                 assert back.read_bytes() == png
             finally:
                 stop(owner)
+            step("self")
             # Copied in the same process: the answer comes back without X.
             subprocess.run([program, "self", "own words"], env=env, check=True, timeout=30)
+            step("xclip")
             # Another program copies; this one pastes.
             if shutil.which("xclip"):
                 writer = subprocess.Popen(["xclip", "-selection", "clipboard", "-i"], env=env, stdin=subprocess.PIPE)
