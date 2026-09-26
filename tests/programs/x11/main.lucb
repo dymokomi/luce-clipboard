@@ -4,6 +4,7 @@
 import c
 import clipboard
 import files
+import io
 import thread
 
 pub func main(arguments: str[]) -> i32!:
@@ -15,6 +16,8 @@ pub func main(arguments: str[]) -> i32!:
         let bytes = try files.read((c.str)path)
         try clipboard.write_text((str)bytes)
         print("ready")
+        # The reader waits for this line; a buffered stdout (the C backend) would hold it.
+        try io.flush_stdout()
         # Keep owning the selection: the reader asks this process.
         while true:
             thread.sleep(50)
@@ -23,6 +26,8 @@ pub func main(arguments: str[]) -> i32!:
         var pixel: u8[4] = [0, 0, 0, 255]
         try clipboard.write_image(png, 1, 1, pixel[..<4])
         print("ready")
+        # The reader waits for this line; a buffered stdout (the C backend) would hold it.
+        try io.flush_stdout()
         while true:
             thread.sleep(50)
     elif mode == "read-text":
