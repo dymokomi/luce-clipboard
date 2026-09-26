@@ -1,0 +1,37 @@
+#==============================================================================================
+#
+#   native - The Linux clipboard backend: X11's CLIPBOARD selection
+#
+#   DESCRIPTION:
+#       Text goes out as UTF8_STRING (and STRING, text/plain;charset=utf-8 and TEXT for older
+#       programs) and comes back from UTF8_STRING, else STRING; images go out and come back
+#       as image/png, which GIMP, Krita, browsers and office programs use. Under Wayland it
+#       works through XWayland; without any X display the clipboard is unavailable.
+#
+#==============================================================================================
+
+func linux_read() -> interop.Owned[str]!:
+    var nothing: u8[]
+    let bytes = try clip_ask(request_read, false, nothing) else return try interop.copy_text("")
+    defer free(bytes) in memory.heap
+    # Programs publish text with a trailing NUL now and then; it is not part of the text.
+    var length = bytes.length
+    while length > 0 and bytes[length - 1] == 0:
+        length -= 1
+    if length > text_limit:
+        error(failed, "clipboard text exceeds 1 MiB")
+    if not utf8.valid(bytes[..<length]):
+        error(failed, "clipboard text is not UTF-8")
+    return try interop.copy_text((str)bytes[..<length])
+
+func linux_write(text: str) -> !:
+    discard(try clip_ask(request_write, false, text.bytes))
+
+func linux_read_image() -> ClipboardImage?!:
+    var nothing: u8[]
+    let encoded = try clip_ask(request_read, true, nothing) else return none
+    var empty: u8[]
+    return ClipboardImage(encoded = encoded, rgba = empty, width = 0, height = 0)
+
+func linux_write_image(png: const u8[]) -> !:
+    discard(try clip_ask(request_write, true, png))

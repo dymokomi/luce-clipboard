@@ -1,0 +1,62 @@
+#==============================================================================================
+#
+#   latin1 - Latin-1 and UTF-8, for X11's STRING
+#
+#   DESCRIPTION:
+#       X11's oldest text target, STRING, is ISO 8859-1. The clipboard reads it into UTF-8
+#       and writes it from UTF-8, with `?` for what Latin-1 lacks.
+#
+#==============================================================================================
+
+import utf8
+
+## The UTF-8 length of Latin-1 `source`.
+pub func utf8_length_of_latin1(source: const u8[]) -> usize:
+    var length: usize = 0
+    for byte in source:
+        length += 1 if byte < 128 else 2
+    return length
+
+## Latin-1 `source` into UTF-8 `target` (at least `utf8_length_of_latin1`
+## long); the length written.
+pub func latin1_to_utf8(source: const u8[], target: u8[]) -> usize:
+    var length: usize = 0
+    for byte in source:
+        if byte < 128:
+            target[length] = byte
+            length += 1
+        else:
+            target[length] = 192 | (byte >> 6)
+            target[length + 1] = 128 | (byte & 63)
+            length += 2
+    return length
+
+## UTF-8 `source` into Latin-1 `target` (at least as long), `?` for a scalar
+## past U+00FF or a byte that is not UTF-8; the length written.
+pub func utf8_to_latin1(source: const u8[], target: u8[]) -> usize:
+    var length: usize = 0
+    var offset: usize = 0
+    while offset < source.length:
+        if let decoded = utf8.decode(source, offset):
+            let scalar = (u32)decoded.scalar
+            target[length] = (u8)scalar if scalar < 256 else 63
+            offset += decoded.width
+        else:
+            target[length] = 63
+            offset += 1
+        length += 1
+    return length
+
+test "Latin-1 text becomes UTF-8":
+    var source: u8[3] = [65, 233, 255]
+    var target: u8[8] = [0, 0, 0, 0, 0, 0, 0, 0]
+    assert(utf8_length_of_latin1(source[..<3]) == 5)
+    let written = latin1_to_utf8(source[..<3], target[..<8])
+    assert(written == 5 and target[0] == 65 and target[1] == 195 and target[2] == 169 and target[3] == 195 and target[4] == 191)
+
+test "UTF-8 text becomes Latin-1, with ? for what it lacks":
+    # "Aé€" : A, U+00E9, U+20AC.
+    var source: u8[6] = [65, 195, 169, 226, 130, 172]
+    var target: u8[6] = [0, 0, 0, 0, 0, 0]
+    let written = utf8_to_latin1(source[..<6], target[..<6])
+    assert(written == 3 and target[0] == 65 and target[1] == 233 and target[2] == 63)

@@ -1,0 +1,460 @@
+#==============================================================================================
+#
+#   service - The X11 clipboard: a connection and a thread of its own
+#
+#   DESCRIPTION:
+#       On X11 the clipboard is a conversation: a program that copies becomes the owner of
+#       the CLIPBOARD selection and must answer every request for it for as long as it owns
+#       it, and a program that pastes asks the owner and waits for its answer. So the
+#       clipboard keeps its own Xlib connection and hidden window, served by one thread that
+#       alone touches them: the UI thread hands it a request (read or write) under a lock,
+#       wakes it through a pipe, and waits for the answer (at most a few seconds). The thread
+#       meanwhile answers other programs' requests for what this one copied, in one piece or,
+#       past `incr_chunk` bytes, in INCR steps.
+#
+#==============================================================================================
+
+## Bytes a property carries at once; more goes in INCR steps.
+let incr_chunk: usize = 262144
+## How long an owner has to answer a paste before it counts as gone, in nanoseconds.
+let answer_ns: u64 = 1500000000
+## How long the UI thread waits for the service, in milliseconds.
+let request_ms: u64 = 5000
+
+## An INCR transfer of what this program copied, to one requestor.
+struct ClipTransfer:
+    var requestor: u64
+    var property: u64
+    var kind: u64
+    var data: u8[]
+    var offset: usize
+    var active: bool
+
+## What the UI thread asked for, and the answer.
+let request_none: i32 = 0
+let request_read: i32 = 1
+let request_write: i32 = 2
+
+struct ClipService:
+    var xlib: ClipXlib
+    var display: void*
+    var window: u64
+    var wake_read: i32
+    var wake_write: i32
+    var clipboard: u64
+    var targets: u64
+    var utf8_string: u64
+    var string: u64
+    var text: u64
+    var plain_utf8: u64
+    var png: u64
+    var incr: u64
+    var atom: u64
+    var landing: u64
+    # Behind `mutex`: the request and its answer.
+    var mutex: sync.Mutex
+    var request: i32
+    var request_png: bool
+    var request_data: u8[]
+    var request_taken: bool
+    var request_done: bool
+    var answer: u8[]
+    var answer_present: bool
+    var answer_failure: str
+    # The service thread's own: a paste in progress, what this program owns, transfers.
+    var reading: bool
+    var read_png: bool
+    var read_target: u64
+    var read_incr: bool
+    var read_buffer: u8[]
+    var read_length: usize
+    var read_deadline: u64
+    var own_text: u8[]
+    var own_png: u8[]
+    var transfers: ClipTransfer[]
+
+var clip_service: ClipService*? = none
+
+## The service, started on first use; the "unavailable" error without X.
+func clip_service_get() -> ClipService*!:
+    if let running = clip_service:
+        return running
+    let xlib = try clip_load_xlib()
+    let display = xlib.open_display(none) else error(window.unsupported, "the desktop clipboard is unavailable: no X display")
+    let root = xlib.default_root_window(display)
+    let hidden = xlib.create_simple_window(display, root, 0, 0, 1, 1, 0, 0, 0)
+    discard(xlib.select_input(display, hidden, x_property_change_mask))
+    var fds: i32[2] = [0, 0]
+    if pipe(&fds[0]) != 0:
+        error(failed, "the clipboard could not make its wake pipe")
+    let transfers = try alloc ClipTransfer[4] in memory.heap
+    var none_bytes: u8[]
+    for index in 0..<transfers.length:
+        transfers[index] = ClipTransfer(requestor = 0, property = 0, kind = 0, data = none_bytes, offset = 0, active = false)
+    var mutex: sync.Mutex
+    let service = try new ClipService(
+        xlib = xlib, display = display, window = hidden, wake_read = fds[0], wake_write = fds[1],
+        clipboard = xlib.intern_atom(display, "CLIPBOARD", 0), targets = xlib.intern_atom(display, "TARGETS", 0),
+        utf8_string = xlib.intern_atom(display, "UTF8_STRING", 0), string = xlib.intern_atom(display, "STRING", 0),
+        text = xlib.intern_atom(display, "TEXT", 0), plain_utf8 = xlib.intern_atom(display, "text/plain;charset=utf-8", 0),
+        png = xlib.intern_atom(display, "image/png", 0), incr = xlib.intern_atom(display, "INCR", 0),
+        atom = xlib.intern_atom(display, "ATOM", 0), landing = xlib.intern_atom(display, "LUCE_CLIPBOARD", 0),
+        mutex = mutex, request = request_none, request_png = false, request_data = none_bytes, request_taken = false, request_done = false,
+        answer = none_bytes, answer_present = false, answer_failure = "",
+        reading = false, read_png = false, read_target = 0, read_incr = false, read_buffer = none_bytes, read_length = 0, read_deadline = 0,
+        own_text = none_bytes, own_png = none_bytes, transfers = transfers) in memory.heap
+    discard(xlib.flush(display))
+    var serving = try thread.spawn(clip_serve, (void*)service, name = "clipboard")
+    serving.detach()
+    clip_service = service
+    return service
+
+## Hand the service a request and wait for its answer: the bytes, or none when
+## the clipboard holds nothing of that kind. `data` (a write's) is copied.
+func clip_ask(kind: i32, png: bool, data: const u8[]) -> u8[]?!:
+    let service = try clip_service_get()
+    var copied: u8[]
+    if data.length > 0:
+        copied = try alloc u8[data.length] in memory.heap
+        memory.copy(copied, data, data.length)
+    service.mutex.lock()
+    service.request = kind
+    service.request_png = png
+    service.request_data = copied
+    service.request_taken = false
+    service.request_done = false
+    service.answer_present = false
+    service.answer_failure = ""
+    service.mutex.unlock()
+    var byte: u8 = 1
+    discard(write(service.wake_write, (void*)&byte, 1))
+    var waited: u64 = 0
+    while waited < request_ms:
+        service.mutex.lock()
+        if service.request_done:
+            service.request = request_none
+            let failure = service.answer_failure
+            let present = service.answer_present
+            let answer = service.answer
+            var empty: u8[]
+            service.answer = empty
+            service.mutex.unlock()
+            if failure.length > 0:
+                if answer.length > 0:
+                    free(answer) in memory.heap
+                error(failed, failure)
+            if not present:
+                return none
+            return answer
+        service.mutex.unlock()
+        thread.sleep(1)
+        waited += 1
+    error(failed, "the X11 clipboard did not answer")
+
+# mark: The service thread =====================================================================
+
+func clip_serve(context: void*?):
+    let service = (ClipService*)(context else return)
+    let x_fd = service.xlib.connection_number(service.display)
+    while true:
+        var fds: ClipPollFd[2] = [ClipPollFd(fd = x_fd, events = 1, revents = 0), ClipPollFd(fd = service.wake_read, events = 1, revents = 0)]
+        # A paste in progress is timed; otherwise the thread sleeps until something happens.
+        discard(poll(&fds[0], 2, 20 if service.reading else -1))
+        if fds[1].revents != 0:
+            var drained: u8[64]
+            discard(read(service.wake_read, (void*)&drained[0], 64))
+        clip_take_request(service)
+        while service.xlib.pending(service.display) > 0:
+            var event: ClipEvent = ---
+            discard(service.xlib.next_event(service.display, (void*)&event))
+            clip_handle(service, &event)
+        if service.reading and time.now() > service.read_deadline:
+            clip_finish_read(service, false, "the program that copied did not answer")
+        discard(service.xlib.flush(service.display))
+
+## Start the UI thread's request, if one waits.
+func clip_take_request(service: ClipService*):
+    service.mutex.lock()
+    let kind = service.request
+    let fresh = kind != request_none and not service.request_taken
+    if fresh:
+        service.request_taken = true
+    let png = service.request_png
+    let data = service.request_data
+    var empty: u8[]
+    service.request_data = empty
+    service.mutex.unlock()
+    if not fresh:
+        return
+    if kind == request_write:
+        clip_own(service, png, data)
+    else:
+        clip_start_read(service, png)
+
+## Answer the UI thread's request.
+func clip_answer(service: ClipService*, present: bool, bytes: u8[], failure: str):
+    service.mutex.lock()
+    service.answer = bytes
+    service.answer_present = present
+    service.answer_failure = failure
+    service.request_done = true
+    service.mutex.unlock()
+
+# mark: Copying: owning the selection ===========================================================
+
+## Take the CLIPBOARD selection with `data` as this program's text or image.
+func clip_own(service: ClipService*, png: bool, data: u8[]):
+    var empty: u8[]
+    if service.own_text.length > 0:
+        free(service.own_text) in memory.heap
+    if service.own_png.length > 0:
+        free(service.own_png) in memory.heap
+    service.own_text = empty if png else data
+    service.own_png = data if png else empty
+    discard(service.xlib.set_selection_owner(service.display, service.clipboard, service.window, 0))
+    if service.xlib.get_selection_owner(service.display, service.clipboard) != service.window:
+        clip_answer(service, false, empty, "the X11 clipboard could not be taken")
+        return
+    clip_answer(service, true, empty, "")
+
+## What this program answers for `target`, and the type it goes as; none when
+## it does not offer that target.
+func clip_offer(service: ClipService*, target: u64, kind: u64*) -> u8[]?:
+    if service.own_png.length > 0:
+        if target == service.png:
+            *kind = service.png
+            return service.own_png
+        return none
+    if service.own_text.length == 0:
+        return none
+    if target == service.utf8_string or target == service.plain_utf8 or target == service.text:
+        *kind = service.utf8_string
+        return service.own_text
+    if target == service.string:
+        *kind = service.string
+        return service.own_text
+    return none
+
+## Another program asks for what this one copied.
+func clip_request_from(service: ClipService*, request: const ClipSelectionRequest*):
+    var property = request.property if request.property != 0 else request.target
+    let xlib = service.xlib
+    if request.selection != service.clipboard or request.owner != service.window:
+        property = 0
+    elif request.target == service.targets:
+        # The targets offered, as ATOMs (Xlib takes format 32 as longs).
+        var offered: u64[5] = [service.targets, 0, 0, 0, 0]
+        var count: i32 = 1
+        if service.own_png.length > 0:
+            offered[1] = service.png
+            count = 2
+        elif service.own_text.length > 0:
+            offered[1] = service.utf8_string
+            offered[2] = service.plain_utf8
+            offered[3] = service.string
+            offered[4] = service.text
+            count = 5
+        discard(xlib.change_property(service.display, request.requestor, property, service.atom, 32, x_prop_mode_replace, (const u8*)&offered[0], count))
+    else:
+        var kind: u64 = 0
+        if let offered = clip_offer(service, request.target, &kind):
+            if kind == service.string:
+                clip_send_latin1(service, request.requestor, property, offered)
+            elif offered.length > incr_chunk:
+                clip_begin_incr(service, request.requestor, property, kind, offered)
+            else:
+                discard(xlib.change_property(service.display, request.requestor, property, kind, 8, x_prop_mode_replace, offered.data, (i32)offered.length))
+        else:
+            property = 0
+    var notify = ClipSelectionNotify(kind = x_selection_notify, serial = 0, send_event = 1, display = service.display, requestor = request.requestor,
+                                     selection = request.selection, target = request.target, property = property, time = request.time)
+    discard(xlib.send_event(service.display, request.requestor, 0, 0, (void*)&notify))
+
+## STRING is Latin-1: the text, with what Latin-1 lacks as `?`.
+func clip_send_latin1(service: ClipService*, requestor: u64, property: u64, text: const u8[]):
+    let latin = alloc u8[text.length] in memory.heap catch failure:
+        discard(failure)
+        return
+    defer free(latin) in memory.heap
+    let length = utf8_to_latin1(text, latin)
+    discard(service.xlib.change_property(service.display, requestor, property, service.string, 8, x_prop_mode_replace, latin.data, (i32)length))
+
+## Offer `data` in INCR steps: its size now, a piece each time the requestor
+## deletes the property, then an empty piece.
+func clip_begin_incr(service: ClipService*, requestor: u64, property: u64, kind: u64, data: const u8[]):
+    for index in 0..<service.transfers.length:
+        if service.transfers[index].active:
+            continue
+        let copied = alloc u8[data.length] in memory.heap catch failure:
+            discard(failure)
+            return
+        memory.copy(copied, data, data.length)
+        service.transfers[index] = ClipTransfer(requestor = requestor, property = property, kind = kind, data = copied, offset = 0, active = true)
+        discard(service.xlib.select_input(service.display, requestor, x_property_change_mask))
+        var size: i64 = (i64)data.length
+        discard(service.xlib.change_property(service.display, requestor, property, service.incr, 32, x_prop_mode_replace, (const u8*)&size, 1))
+        return
+
+## The requestor took a piece: send the next, or the empty one that ends it.
+func clip_continue_incr(service: ClipService*, property: const ClipPropertyEvent*):
+    for index in 0..<service.transfers.length:
+        let transfer = &service.transfers[index]
+        if not transfer.active or transfer.requestor != property.window or transfer.property != property.atom:
+            continue
+        let left = transfer.data.length - transfer.offset
+        let piece = left if left < incr_chunk else incr_chunk
+        discard(service.xlib.change_property(service.display, transfer.requestor, transfer.property, transfer.kind, 8, x_prop_mode_replace,
+                                             transfer.data.data + transfer.offset, (i32)piece))
+        transfer.offset += piece
+        if piece == 0:
+            discard(service.xlib.select_input(service.display, transfer.requestor, 0))
+            free(transfer.data) in memory.heap
+            var empty: u8[]
+            transfer.data = empty
+            transfer.active = false
+        return
+
+# mark: Pasting: asking the owner ===============================================================
+
+## Ask the owner for the clipboard as text or PNG. What this program owns
+## itself comes straight back.
+func clip_start_read(service: ClipService*, png: bool):
+    var empty: u8[]
+    let owner = service.xlib.get_selection_owner(service.display, service.clipboard)
+    if owner == 0:
+        clip_answer(service, false, empty, "")
+        return
+    if owner == service.window:
+        let own = service.own_png if png else service.own_text
+        if own.length == 0:
+            clip_answer(service, false, empty, "")
+            return
+        let copied = alloc u8[own.length] in memory.heap catch failure:
+            clip_answer(service, false, empty, "clipboard memory ran out")
+            return
+        memory.copy(copied, own, own.length)
+        clip_answer(service, true, copied, "")
+        return
+    service.reading = true
+    service.read_png = png
+    service.read_incr = false
+    service.read_length = 0
+    service.read_target = service.png if png else service.utf8_string
+    service.read_deadline = time.now() + answer_ns
+    discard(service.xlib.delete_property(service.display, service.window, service.landing))
+    discard(service.xlib.convert_selection(service.display, service.clipboard, service.read_target, service.landing, service.window, 0))
+
+## The owner answered (or refused) the target asked for.
+func clip_selection_notified(service: ClipService*, notify: const ClipSelectionNotify*):
+    if not service.reading or notify.requestor != service.window or notify.selection != service.clipboard:
+        return
+    if notify.property == 0:
+        # Refused: text falls back from UTF8_STRING to STRING; nothing else is left to ask.
+        if not service.read_png and service.read_target == service.utf8_string:
+            service.read_target = service.string
+            service.read_deadline = time.now() + answer_ns
+            discard(service.xlib.convert_selection(service.display, service.clipboard, service.string, service.landing, service.window, 0))
+            return
+        clip_finish_read(service, false, "")
+        return
+    var kind: u64 = 0
+    if not clip_take_property(service, &kind):
+        return
+    if kind == service.incr:
+        # The owner sends it in pieces, each announced by a new value of the property.
+        service.read_incr = true
+        service.read_length = 0
+        service.read_deadline = time.now() + answer_ns
+        return
+    clip_finish_read(service, true, "")
+
+## A piece of an INCR paste arrived; an empty one ends it.
+func clip_property_changed(service: ClipService*, property: const ClipPropertyEvent*):
+    if property.window == service.window:
+        if service.reading and service.read_incr and property.atom == service.landing and property.state == x_property_new_value:
+            let before = service.read_length
+            var kind: u64 = 0
+            if not clip_take_property(service, &kind):
+                return
+            service.read_deadline = time.now() + answer_ns
+            if service.read_length == before:
+                clip_finish_read(service, true, "")
+        return
+    if property.state == x_property_delete:
+        clip_continue_incr(service, property)
+
+## Append the landing property's bytes to the paste, deleting it (which asks an
+## INCR owner for the next piece); false when the paste ended in failure.
+func clip_take_property(service: ClipService*, kind: u64*) -> bool:
+    var actual_format: i32 = 0
+    var items: u64 = 0
+    var after: u64 = 0
+    var data: u8*? = none
+    if service.xlib.get_window_property(service.display, service.window, service.landing, 0, 536870911, 1, 0, kind, &actual_format, &items, &after, &data) != 0:
+        clip_finish_read(service, false, "the clipboard could not be read")
+        return false
+    let bytes = data else return true
+    defer discard(service.xlib.release((void*)bytes))
+    if *kind == service.incr:
+        return true
+    let sample = (usize)actual_format // 8 if actual_format == 8 or actual_format == 16 else ((usize)8 if actual_format == 32 else 1)
+    let length = (usize)items * sample
+    let limit = image_limit if service.read_png else text_limit * 4
+    if service.read_length + length > limit:
+        clip_finish_read(service, false, "the clipboard holds more than can be pasted")
+        return false
+    if service.read_length + length > service.read_buffer.length:
+        var capacity = service.read_buffer.length * 2 + 65536
+        while capacity < service.read_length + length:
+            capacity *= 2
+        let grown = alloc u8[capacity] in memory.heap catch failure:
+            clip_finish_read(service, false, "clipboard memory ran out")
+            return false
+        if service.read_length > 0:
+            memory.copy(grown, service.read_buffer, service.read_length)
+        if service.read_buffer.length > 0:
+            free(service.read_buffer) in memory.heap
+        service.read_buffer = grown
+    memory.copy(service.read_buffer[service.read_length..<service.read_length + length], u8[](bytes, length), length)
+    service.read_length += length
+    return true
+
+## End the paste: the bytes read (as UTF-8 for text), or none, or a failure.
+func clip_finish_read(service: ClipService*, present: bool, failure: str):
+    service.reading = false
+    var empty: u8[]
+    if not present or failure.length > 0 or service.read_length == 0:
+        clip_answer(service, false, empty, failure)
+        return
+    let latin = not service.read_png and service.read_target == service.string
+    let taken = service.read_buffer[..<service.read_length]
+    let answer = alloc u8[utf8_length_of_latin1(taken) if latin else taken.length] in memory.heap catch problem:
+        discard(problem)
+        clip_answer(service, false, empty, "clipboard memory ran out")
+        return
+    if latin:
+        discard(latin1_to_utf8(taken, answer))
+    else:
+        memory.copy(answer, taken, taken.length)
+    clip_answer(service, true, answer, "")
+
+## Route an event the connection delivered.
+func clip_handle(service: ClipService*, event: ClipEvent*):
+    let any = (ClipAnyEvent*)event
+    if any.kind == x_selection_request:
+        clip_request_from(service, (ClipSelectionRequest*)event)
+    elif any.kind == x_selection_notify:
+        clip_selection_notified(service, (ClipSelectionNotify*)event)
+    elif any.kind == x_property_notify:
+        clip_property_changed(service, (ClipPropertyEvent*)event)
+    elif any.kind == x_selection_clear:
+        let clear = (ClipSelectionClear*)event
+        if clear.selection == service.clipboard:
+            # Another program copied: what this one held is no longer offered.
+            var empty: u8[]
+            if service.own_text.length > 0:
+                free(service.own_text) in memory.heap
+            if service.own_png.length > 0:
+                free(service.own_png) in memory.heap
+            service.own_text = empty
+            service.own_png = empty

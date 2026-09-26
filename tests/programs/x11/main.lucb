@@ -1,0 +1,44 @@
+## The X11 clipboard between processes: one copies and keeps answering
+## (`serve-text`, `serve-image`), another pastes (`read-text`, `read-image`);
+## `self` copies and pastes in one process. Payloads come from and go to files.
+import c
+import clipboard
+import files
+import thread
+
+pub func main(arguments: str[]) -> i32!:
+    if arguments.length < 3:
+        return 2
+    let mode = arguments[1]
+    let path = arguments[2]
+    if mode == "serve-text":
+        let bytes = try files.read((c.str)path)
+        try clipboard.write_text((str)bytes)
+        print("ready")
+        # Keep owning the selection: the reader asks this process.
+        while true:
+            thread.sleep(50)
+    elif mode == "serve-image":
+        let png = try files.read((c.str)path)
+        var pixel: u8[4] = [0, 0, 0, 255]
+        try clipboard.write_image(png, 1, 1, pixel[..<4])
+        print("ready")
+        while true:
+            thread.sleep(50)
+    elif mode == "read-text":
+        let text = try clipboard.read_text()
+        defer text.release()
+        try files.write((c.str)path, text.value.bytes)
+    elif mode == "read-image":
+        var image = try clipboard.read_image() else return 3
+        defer image.destroy()
+        try files.write((c.str)path, image.encoded)
+    elif mode == "self":
+        try clipboard.write_text(path)
+        let back = try clipboard.read_text()
+        defer back.release()
+        if back.value != path:
+            return 4
+    else:
+        return 2
+    return 0

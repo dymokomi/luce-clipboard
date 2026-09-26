@@ -1,3 +1,6 @@
 module.lucb
 macos/native.lucb
 windows/native.lucb
+linux/xlib.lucb
+linux/service.lucb
+linux/native.lucb

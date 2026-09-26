@@ -1,0 +1,136 @@
+#==============================================================================================
+#
+#   xlib - The Xlib calls the X11 clipboard makes, loaded at run time
+#
+#   DESCRIPTION:
+#       libX11.so.6 is opened the first time the clipboard is used, so a build needs no
+#       development package and a machine without X gets the "unavailable" error rather
+#       than failing to start. The clipboard keeps a connection of its own (see service),
+#       used by one thread only, so Xlib needs no locking.
+#
+#==============================================================================================
+
+extern func dlopen(file: c.str, mode: i32) -> void*?
+extern func dlsym(handle: void*, name: c.str) -> void*?
+
+## struct pollfd.
+extern struct ClipPollFd:
+    fd: i32
+    events: i16
+    revents: i16
+
+extern func poll(fds: ClipPollFd*, count: u64, timeout: i32) -> i32
+extern func pipe(fds: i32*) -> i32
+extern func read(fd: i32, buffer: void*, count: usize) -> isize
+extern func write(fd: i32, buffer: const void*, count: usize) -> isize
+
+## XEvent: a 192-byte union, read through the views below by its type.
+extern struct ClipEvent:
+    words: i64[24]
+
+extern struct ClipAnyEvent:
+    kind: i32
+    serial: u64
+    send_event: i32
+    display: void*?
+    window: u64
+
+## XSelectionRequestEvent.
+extern struct ClipSelectionRequest:
+    kind: i32
+    serial: u64
+    send_event: i32
+    display: void*?
+    owner: u64
+    requestor: u64
+    selection: u64
+    target: u64
+    property: u64
+    time: u64
+
+## XSelectionEvent (SelectionNotify).
+extern struct ClipSelectionNotify:
+    kind: i32
+    serial: u64
+    send_event: i32
+    display: void*?
+    requestor: u64
+    selection: u64
+    target: u64
+    property: u64
+    time: u64
+
+## XSelectionClearEvent.
+extern struct ClipSelectionClear:
+    kind: i32
+    serial: u64
+    send_event: i32
+    display: void*?
+    window: u64
+    selection: u64
+    time: u64
+
+## XPropertyEvent.
+extern struct ClipPropertyEvent:
+    kind: i32
+    serial: u64
+    send_event: i32
+    display: void*?
+    window: u64
+    atom: u64
+    time: u64
+    state: i32
+
+let x_property_notify: i32 = 28
+let x_selection_clear: i32 = 29
+let x_selection_request: i32 = 30
+let x_selection_notify: i32 = 31
+let x_property_new_value: i32 = 0
+let x_property_delete: i32 = 1
+let x_property_change_mask: i64 = 4194304
+let x_prop_mode_replace: i32 = 0
+
+## The Xlib functions the clipboard calls.
+struct ClipXlib:
+    var open_display: func(c.str?) -> void*?
+    var default_root_window: func(void*) -> u64
+    var connection_number: func(void*) -> i32
+    var create_simple_window: func(void*, u64, i32, i32, u32, u32, u32, u64, u64) -> u64
+    var select_input: func(void*, u64, i64) -> i32
+    var intern_atom: func(void*, c.str, i32) -> u64
+    var convert_selection: func(void*, u64, u64, u64, u64, u64) -> i32
+    var set_selection_owner: func(void*, u64, u64, u64) -> i32
+    var get_selection_owner: func(void*, u64) -> u64
+    var get_window_property: func(void*, u64, u64, i64, i64, i32, u64, u64*, i32*, u64*, u64*, u8*?*) -> i32
+    var change_property: func(void*, u64, u64, u64, i32, i32, const u8*, i32) -> i32
+    var delete_property: func(void*, u64, u64) -> i32
+    var send_event: func(void*, u64, i32, i64, void*) -> i32
+    var flush: func(void*) -> i32
+    var pending: func(void*) -> i32
+    var next_event: func(void*, void*) -> i32
+    var release: func(void*) -> i32
+
+func clip_symbol(library: void*, name: c.str) -> void*!:
+    return dlsym(library, name) else error(window.unsupported, "the installed Xlib lacks a function the clipboard needs")
+
+## Xlib, or the "unavailable" error when the machine has none.
+func clip_load_xlib() -> ClipXlib!:
+    let library = dlopen("libX11.so.6", 2) else error(window.unsupported, "the desktop clipboard is unavailable: no X11 library (libX11.so.6)")
+    return ClipXlib(
+        open_display = (func(c.str?) -> void*?)(try clip_symbol(library, "XOpenDisplay")),
+        default_root_window = (func(void*) -> u64)(try clip_symbol(library, "XDefaultRootWindow")),
+        connection_number = (func(void*) -> i32)(try clip_symbol(library, "XConnectionNumber")),
+        create_simple_window = (func(void*, u64, i32, i32, u32, u32, u32, u64, u64) -> u64)(try clip_symbol(library, "XCreateSimpleWindow")),
+        select_input = (func(void*, u64, i64) -> i32)(try clip_symbol(library, "XSelectInput")),
+        intern_atom = (func(void*, c.str, i32) -> u64)(try clip_symbol(library, "XInternAtom")),
+        convert_selection = (func(void*, u64, u64, u64, u64, u64) -> i32)(try clip_symbol(library, "XConvertSelection")),
+        set_selection_owner = (func(void*, u64, u64, u64) -> i32)(try clip_symbol(library, "XSetSelectionOwner")),
+        get_selection_owner = (func(void*, u64) -> u64)(try clip_symbol(library, "XGetSelectionOwner")),
+        get_window_property = (func(void*, u64, u64, i64, i64, i32, u64, u64*, i32*, u64*, u64*, u8*?*) -> i32)(try clip_symbol(library, "XGetWindowProperty")),
+        change_property = (func(void*, u64, u64, u64, i32, i32, const u8*, i32) -> i32)(try clip_symbol(library, "XChangeProperty")),
+        delete_property = (func(void*, u64, u64) -> i32)(try clip_symbol(library, "XDeleteProperty")),
+        send_event = (func(void*, u64, i32, i64, void*) -> i32)(try clip_symbol(library, "XSendEvent")),
+        flush = (func(void*) -> i32)(try clip_symbol(library, "XFlush")),
+        pending = (func(void*) -> i32)(try clip_symbol(library, "XPending")),
+        next_event = (func(void*, void*) -> i32)(try clip_symbol(library, "XNextEvent")),
+        release = (func(void*) -> i32)(try clip_symbol(library, "XFree")))

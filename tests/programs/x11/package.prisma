@@ -1,0 +1,14 @@
+#prisma 4.0
+def package "x11_clipboard_contracts" {
+    def dependency "luce-clipboard" {
+        str owner = "dymokomi"
+        str version = "^0.2.0"
+        str path = "../../.."
+    }
+
+    def dependency "luce-std" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../../../../luce-std"
+    }
+}
