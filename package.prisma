@@ -1,7 +1,7 @@
 #prisma 4.0
 def package "luce-clipboard" {
     str owner = "dymokomi"
-    str version = "0.3.0"
+    str version = "0.2.1"
     str kind = "package"
     str language = "luce-base"
     str description = "The system clipboard for Luce programs: read and write text and images on macOS, Windows and Linux (X11)."
