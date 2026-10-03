@@ -2,8 +2,8 @@
 ## (`serve-text`, `serve-image`), another pastes (`read-text`, `read-image`);
 ## `self` copies and pastes in one process. Payloads come from and go to files.
 import c
-import luce_clipboard.clipboard
-import luce_std.files
+from luce_clipboard import clipboard
+from luce_std import files
 import io
 import thread
 
