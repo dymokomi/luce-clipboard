@@ -19,11 +19,11 @@ import strings
 import sync
 import thread
 import time
-import utf8
-import window
+import luce_std.utf8
+import luce_window.window
 import windows_text
-from luce_clipboard.dib import dib_to_bitmap, bitmap_to_dib
-from luce_clipboard.latin1 import latin1_to_utf8, utf8_length_of_latin1, utf8_to_latin1
+from dib import dib_to_bitmap, bitmap_to_dib
+from latin1 import latin1_to_utf8, utf8_length_of_latin1, utf8_to_latin1
 ## Clipboard access failed, or its text was rejected.
 pub let failed: ErrorCode = ErrorCode.package(117)
 let text_limit: usize = 1048576
