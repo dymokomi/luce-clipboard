@@ -14,7 +14,8 @@ pub func main(arguments: str[]) -> i32!:
     let path = arguments[2]
     if mode == "serve-text":
         let bytes = try files.read((c.str)path)
-        try clipboard.write_text((str)bytes)
+        defer bytes.release()
+        try clipboard.write_text((str)bytes.value)
         print("ready")
         # The reader waits for this line; a buffered stdout (the C backend) would hold it.
         try io.flush_stdout()
@@ -23,8 +24,9 @@ pub func main(arguments: str[]) -> i32!:
             thread.sleep(50)
     elif mode == "serve-image":
         let png = try files.read((c.str)path)
+        defer png.release()
         var pixel: u8[4] = [0, 0, 0, 255]
-        try clipboard.write_image(png, 1, 1, pixel[..<4])
+        try clipboard.write_image(png.value, 1, 1, pixel[..<4])
         print("ready")
         # The reader waits for this line; a buffered stdout (the C backend) would hold it.
         try io.flush_stdout()
