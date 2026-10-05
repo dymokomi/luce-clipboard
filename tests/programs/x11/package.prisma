@@ -8,7 +8,7 @@ def package "x11_clipboard_contracts" {
 
     def dependency "luce-std" {
         str owner = "dymokomi"
-        str version = "^0.5.0"
+        str version = "^0.6.0"
         str path = "../../../../luce-std"
     }
 }
