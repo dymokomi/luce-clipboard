@@ -29,13 +29,13 @@ let device_independent_bitmap: u32 = 8
 func win_read() -> interop.Owned[str]!:
     if OpenClipboard(GetActiveWindow()) == 0:
         error(failed, "the clipboard is busy")
-    defer discard(CloseClipboard())
+    defer _ = CloseClipboard()
     if IsClipboardFormatAvailable(unicode_text) == 0:
         return try interop.copy_text("")
     let storage = GetClipboardData(unicode_text) else error(failed, "clipboard text is unavailable")
     let capacity = GlobalSize(storage) // 2
     let address = GlobalLock(storage) else error(failed, "clipboard text cannot be read")
-    defer discard(GlobalUnlock(storage))
+    defer _ = GlobalUnlock(storage)
     let wide = (u16*)address
     var length: usize = 0
     while length < capacity and length <= text_limit and wide[length] != 0:
@@ -62,17 +62,17 @@ func win_write(text: str) -> !:
         defer free_unpublished(storage, &published)
         let address = GlobalLock(storage) else error(failed, "could not lock clipboard storage")
         memory.copy(u8[]((u8*)address, wide.length * 2), u8[]((u8*)wide.data, wide.length * 2), wide.length * 2)
-        discard(GlobalUnlock(storage))
+        _ = GlobalUnlock(storage)
         if OpenClipboard(owner) == 0:
             error(failed, "the clipboard is busy")
-        defer discard(CloseClipboard())
+        defer _ = CloseClipboard()
         if EmptyClipboard() == 0 or SetClipboardData(unicode_text, storage) == none:
             error(failed, "could not publish clipboard text")
         published = true
 
 func free_unpublished(storage: void*, published: bool*):
     if not *published:
-        discard(GlobalFree(storage))
+        _ = GlobalFree(storage)
 
 func png_format() -> u32!:
     let registered = RegisterClipboardFormatA("PNG")
@@ -89,8 +89,8 @@ func win_copy(kind: u32) -> u8[]?!:
     if length == 0 or length > image_limit:
         error(failed, "the clipboard image is empty or too large")
     let address = GlobalLock(storage) else error(failed, "the clipboard image cannot be read")
-    defer discard(GlobalUnlock(storage))
-    let bytes = try alloc u8[length] in memory.heap
+    defer _ = GlobalUnlock(storage)
+    let bytes = try new u8[length] --- in memory.heap
     memory.copy(bytes, u8[]((u8*)address, length), length)
     return bytes
 
@@ -98,7 +98,7 @@ func win_read_image() -> ClipboardImage?!:
     let png = try png_format()
     if OpenClipboard(GetActiveWindow()) == 0:
         error(failed, "the clipboard is busy")
-    defer discard(CloseClipboard())
+    defer _ = CloseClipboard()
     if let encoded = try win_copy(png):
         var empty: u8[]
         return ClipboardImage(encoded = encoded, rgba = empty, width = 0, height = 0)
@@ -113,9 +113,9 @@ func global_copy(bytes: const u8[]) -> void*!:
     let storage = GlobalAlloc(2, bytes.length) else error(failed, "could not allocate clipboard storage")
     if let address = GlobalLock(storage):
         memory.copy(u8[]((u8*)address, bytes.length), bytes, bytes.length)
-        discard(GlobalUnlock(storage))
+        _ = GlobalUnlock(storage)
         return storage
-    discard(GlobalFree(storage))
+    _ = GlobalFree(storage)
     error(failed, "could not lock clipboard storage")
 
 func win_write_image(png: const u8[], width: u32, height: u32, rgba: const u8[]) -> !:
@@ -131,11 +131,10 @@ func win_write_image(png: const u8[], width: u32, height: u32, rgba: const u8[])
     defer free_unpublished(bitmap_storage, &bitmap_published)
     if OpenClipboard(owner) == 0:
         error(failed, "the clipboard is busy")
-    defer discard(CloseClipboard())
+    defer _ = CloseClipboard()
     if EmptyClipboard() == 0 or SetClipboardData(png_id, encoded_storage) == none:
         error(failed, "could not publish the clipboard image")
     encoded_published = true
     if SetClipboardData(device_independent_bitmap, bitmap_storage) == none:
         error(failed, "could not publish the clipboard bitmap")
     bitmap_published = true
-

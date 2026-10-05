@@ -25,7 +25,7 @@ func linux_read() -> interop.Owned[str]!:
     return try interop.copy_text((str)bytes[..<length])
 
 func linux_write(text: str) -> !:
-    discard(try clip_ask(request_write, false, text.bytes))
+    _ = try clip_ask(request_write, false, text.bytes)
 
 func linux_read_image() -> ClipboardImage?!:
     var nothing: u8[]
@@ -34,4 +34,4 @@ func linux_read_image() -> ClipboardImage?!:
     return ClipboardImage(encoded = encoded, rgba = empty, width = 0, height = 0)
 
 func linux_write_image(png: const u8[]) -> !:
-    discard(try clip_ask(request_write, true, png))
+    _ = try clip_ask(request_write, true, png)

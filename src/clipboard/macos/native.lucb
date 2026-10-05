@@ -50,7 +50,7 @@ func mac_write(text: str) -> !:
     let allocated = msg_object(native_type, sel_registerName("alloc")) else error(failed, "could not allocate clipboard text")
     let value = msg_init(allocated, sel_registerName("initWithBytes:length:encoding:"), text.bytes.data, text.length, 4) else error(failed, "could not create clipboard text")
     defer msg_release(value, sel_registerName("release"))
-    discard(msg_count(board, sel_registerName("clearContents")))
+    _ = msg_count(board, sel_registerName("clearContents"))
     if not msg_write(board, sel_registerName("setString:forType:"), value, NSPasteboardTypeString):
         error(failed, "could not publish clipboard text")
 
@@ -63,7 +63,7 @@ func mac_read_image() -> ClipboardImage?!:
     if length == 0 or length > image_limit:
         error(failed, "the clipboard image is empty or too large")
     let bytes = msg_bytes(data, sel_registerName("bytes")) else error(failed, "the clipboard image cannot be read")
-    let encoded = try alloc u8[length] in memory.heap
+    let encoded = try new u8[length] --- in memory.heap
     memory.copy(encoded, u8[]((u8*)bytes, length), length)
     var empty: u8[]
     return ClipboardImage(encoded = encoded, rgba = empty, width = 0, height = 0)
@@ -74,7 +74,6 @@ func mac_write_image(png: const u8[]) -> !:
     let board = try mac_board()
     let native_type = objc_getClass("NSData") else error(failed, "Foundation data is unavailable")
     let data = msg_data(native_type, sel_registerName("dataWithBytes:length:"), png.data, png.length) else error(failed, "could not hold the clipboard image")
-    discard(msg_count(board, sel_registerName("clearContents")))
+    _ = msg_count(board, sel_registerName("clearContents"))
     if not msg_write(board, sel_registerName("setData:forType:"), data, NSPasteboardTypePNG):
         error(failed, "could not publish the clipboard image")
-

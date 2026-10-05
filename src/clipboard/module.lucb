@@ -66,7 +66,7 @@ pub struct ClipboardImage:
     pub var width: u32
     pub var height: u32
 
-    pub mutating func destroy():
+    pub func destroy():
         if self.encoded.length > 0:
             free(self.encoded) in memory.heap
         if self.rgba.length > 0:

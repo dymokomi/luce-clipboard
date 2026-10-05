@@ -83,11 +83,11 @@ func clip_service_get() -> ClipService*!:
     let display = xlib.open_display(none) else error(window.unsupported, "the desktop clipboard is unavailable: no X display")
     let root = xlib.default_root_window(display)
     let hidden = xlib.create_simple_window(display, root, 0, 0, 1, 1, 0, 0, 0)
-    discard(xlib.select_input(display, hidden, x_property_change_mask))
+    _ = xlib.select_input(display, hidden, x_property_change_mask)
     var fds: i32[2] = [0, 0]
     if pipe(&fds[0]) != 0:
         error(failed, "the clipboard could not make its wake pipe")
-    let transfers = try alloc ClipTransfer[4] in memory.heap
+    let transfers = try new ClipTransfer[4] --- in memory.heap
     var none_bytes: u8[]
     for index in 0..<transfers.length:
         transfers[index] = ClipTransfer(requestor = 0, property = 0, kind = 0, data = none_bytes, offset = 0, active = false)
@@ -103,7 +103,7 @@ func clip_service_get() -> ClipService*!:
         answer = none_bytes, answer_present = false, answer_failure = "",
         reading = false, read_png = false, read_target = 0, read_incr = false, read_buffer = none_bytes, read_length = 0, read_deadline = 0,
         own_text = none_bytes, own_png = none_bytes, transfers = transfers) in memory.heap
-    discard(xlib.flush(display))
+    _ = xlib.flush(display)
     var serving = try thread.spawn(clip_serve, (void*)service, name = "clipboard")
     serving.detach()
     clip_service = service
@@ -115,7 +115,7 @@ func clip_ask(kind: i32, png: bool, data: const u8[]) -> u8[]?!:
     let service = try clip_service_get()
     var copied: u8[]
     if data.length > 0:
-        copied = try alloc u8[data.length] in memory.heap
+        copied = try new u8[data.length] --- in memory.heap
         memory.copy(copied, data, data.length)
     service.mutex.lock()
     service.request = kind
@@ -127,7 +127,7 @@ func clip_ask(kind: i32, png: bool, data: const u8[]) -> u8[]?!:
     service.answer_failure = ""
     service.mutex.unlock()
     var byte: u8 = 1
-    discard(write(service.wake_write, (void*)&byte, 1))
+    _ = write(service.wake_write, (void*)&byte, 1)
     var waited: u64 = 0
     while waited < request_ms:
         service.mutex.lock()
@@ -159,18 +159,18 @@ func clip_serve(context: void*?):
     while true:
         var fds: ClipPollFd[2] = [ClipPollFd(fd = x_fd, events = 1, revents = 0), ClipPollFd(fd = service.wake_read, events = 1, revents = 0)]
         # A paste in progress is timed; otherwise the thread sleeps until something happens.
-        discard(poll(&fds[0], 2, 20 if service.reading else -1))
+        _ = poll(&fds[0], 2, 20 if service.reading else -1)
         if fds[1].revents != 0:
             var drained: u8[64]
-            discard(read(service.wake_read, (void*)&drained[0], 64))
+            _ = read(service.wake_read, (void*)&drained[0], 64)
         clip_take_request(service)
         while service.xlib.pending(service.display) > 0:
             var event: ClipEvent = ---
-            discard(service.xlib.next_event(service.display, (void*)&event))
+            _ = service.xlib.next_event(service.display, (void*)&event)
             clip_handle(service, &event)
         if service.reading and time.now() > service.read_deadline:
             clip_finish_read(service, false, "the program that copied did not answer")
-        discard(service.xlib.flush(service.display))
+        _ = service.xlib.flush(service.display)
 
 ## Start the UI thread's request, if one waits.
 func clip_take_request(service: ClipService*):
@@ -211,7 +211,7 @@ func clip_own(service: ClipService*, png: bool, data: u8[]):
         free(service.own_png) in memory.heap
     service.own_text = empty if png else data
     service.own_png = data if png else empty
-    discard(service.xlib.set_selection_owner(service.display, service.clipboard, service.window, 0))
+    _ = service.xlib.set_selection_owner(service.display, service.clipboard, service.window, 0)
     if service.xlib.get_selection_owner(service.display, service.clipboard) != service.window:
         clip_answer(service, false, empty, "the X11 clipboard could not be taken")
         return
@@ -254,7 +254,7 @@ func clip_request_from(service: ClipService*, request: const ClipSelectionReques
             offered[3] = service.string
             offered[4] = service.text
             count = 5
-        discard(xlib.change_property(service.display, request.requestor, property, service.atom, 32, x_prop_mode_replace, (const u8*)&offered[0], count))
+        _ = xlib.change_property(service.display, request.requestor, property, service.atom, 32, x_prop_mode_replace, (const u8*)&offered[0], count)
     else:
         var kind: u64 = 0
         if let offered = clip_offer(service, request.target, &kind):
@@ -263,21 +263,21 @@ func clip_request_from(service: ClipService*, request: const ClipSelectionReques
             elif offered.length > incr_chunk:
                 clip_begin_incr(service, request.requestor, property, kind, offered)
             else:
-                discard(xlib.change_property(service.display, request.requestor, property, kind, 8, x_prop_mode_replace, offered.data, (i32)offered.length))
+                _ = xlib.change_property(service.display, request.requestor, property, kind, 8, x_prop_mode_replace, offered.data, (i32)offered.length)
         else:
             property = 0
     var notify = ClipSelectionNotify(kind = x_selection_notify, serial = 0, send_event = 1, display = service.display, requestor = request.requestor,
                                      selection = request.selection, target = request.target, property = property, time = request.time)
-    discard(xlib.send_event(service.display, request.requestor, 0, 0, (void*)&notify))
+    _ = xlib.send_event(service.display, request.requestor, 0, 0, (void*)&notify)
 
 ## STRING is Latin-1: the text, with what Latin-1 lacks as `?`.
 func clip_send_latin1(service: ClipService*, requestor: u64, property: u64, text: const u8[]):
-    let latin = alloc u8[text.length] in memory.heap catch failure:
-        discard(failure)
+    let latin = new u8[text.length] --- in memory.heap catch failure:
+        _ = failure
         return
     defer free(latin) in memory.heap
     let length = utf8_to_latin1(text, latin)
-    discard(service.xlib.change_property(service.display, requestor, property, service.string, 8, x_prop_mode_replace, latin.data, (i32)length))
+    _ = service.xlib.change_property(service.display, requestor, property, service.string, 8, x_prop_mode_replace, latin.data, (i32)length)
 
 ## Offer `data` in INCR steps: its size now, a piece each time the requestor
 ## deletes the property, then an empty piece.
@@ -285,14 +285,14 @@ func clip_begin_incr(service: ClipService*, requestor: u64, property: u64, kind:
     for index in 0..<service.transfers.length:
         if service.transfers[index].active:
             continue
-        let copied = alloc u8[data.length] in memory.heap catch failure:
-            discard(failure)
+        let copied = new u8[data.length] --- in memory.heap catch failure:
+            _ = failure
             return
         memory.copy(copied, data, data.length)
         service.transfers[index] = ClipTransfer(requestor = requestor, property = property, kind = kind, data = copied, offset = 0, active = true)
-        discard(service.xlib.select_input(service.display, requestor, x_property_change_mask))
+        _ = service.xlib.select_input(service.display, requestor, x_property_change_mask)
         var size: i64 = (i64)data.length
-        discard(service.xlib.change_property(service.display, requestor, property, service.incr, 32, x_prop_mode_replace, (const u8*)&size, 1))
+        _ = service.xlib.change_property(service.display, requestor, property, service.incr, 32, x_prop_mode_replace, (const u8*)&size, 1)
         return
 
 ## The requestor took a piece: send the next, or the empty one that ends it.
@@ -303,11 +303,11 @@ func clip_continue_incr(service: ClipService*, property: const ClipPropertyEvent
             continue
         let left = transfer.data.length - transfer.offset
         let piece = left if left < incr_chunk else incr_chunk
-        discard(service.xlib.change_property(service.display, transfer.requestor, transfer.property, transfer.kind, 8, x_prop_mode_replace,
-                                             transfer.data.data + transfer.offset, (i32)piece))
+        _ = service.xlib.change_property(service.display, transfer.requestor, transfer.property, transfer.kind, 8, x_prop_mode_replace,
+                                         transfer.data.data + transfer.offset, (i32)piece)
         transfer.offset += piece
         if piece == 0:
-            discard(service.xlib.select_input(service.display, transfer.requestor, 0))
+            _ = service.xlib.select_input(service.display, transfer.requestor, 0)
             free(transfer.data) in memory.heap
             var empty: u8[]
             transfer.data = empty
@@ -329,7 +329,7 @@ func clip_start_read(service: ClipService*, png: bool):
         if own.length == 0:
             clip_answer(service, false, empty, "")
             return
-        let copied = alloc u8[own.length] in memory.heap catch failure:
+        let copied = new u8[own.length] --- in memory.heap catch failure:
             clip_answer(service, false, empty, "clipboard memory ran out")
             return
         memory.copy(copied, own, own.length)
@@ -341,8 +341,8 @@ func clip_start_read(service: ClipService*, png: bool):
     service.read_length = 0
     service.read_target = service.png if png else service.utf8_string
     service.read_deadline = time.now() + answer_ns
-    discard(service.xlib.delete_property(service.display, service.window, service.landing))
-    discard(service.xlib.convert_selection(service.display, service.clipboard, service.read_target, service.landing, service.window, 0))
+    _ = service.xlib.delete_property(service.display, service.window, service.landing)
+    _ = service.xlib.convert_selection(service.display, service.clipboard, service.read_target, service.landing, service.window, 0)
 
 ## The owner answered (or refused) the target asked for.
 func clip_selection_notified(service: ClipService*, notify: const ClipSelectionNotify*):
@@ -353,7 +353,7 @@ func clip_selection_notified(service: ClipService*, notify: const ClipSelectionN
         if not service.read_png and service.read_target == service.utf8_string:
             service.read_target = service.string
             service.read_deadline = time.now() + answer_ns
-            discard(service.xlib.convert_selection(service.display, service.clipboard, service.string, service.landing, service.window, 0))
+            _ = service.xlib.convert_selection(service.display, service.clipboard, service.string, service.landing, service.window, 0)
             return
         clip_finish_read(service, false, "")
         return
@@ -394,7 +394,7 @@ func clip_take_property(service: ClipService*, kind: u64*) -> bool:
         clip_finish_read(service, false, "the clipboard could not be read")
         return false
     let bytes = data else return true
-    defer discard(service.xlib.release((void*)bytes))
+    defer _ = service.xlib.release((void*)bytes)
     if *kind == service.incr:
         return true
     let sample = (usize)actual_format // 8 if actual_format == 8 or actual_format == 16 else ((usize)8 if actual_format == 32 else 1)
@@ -407,7 +407,7 @@ func clip_take_property(service: ClipService*, kind: u64*) -> bool:
         var capacity = service.read_buffer.length * 2 + 65536
         while capacity < service.read_length + length:
             capacity *= 2
-        let grown = alloc u8[capacity] in memory.heap catch failure:
+        let grown = new u8[capacity] --- in memory.heap catch failure:
             clip_finish_read(service, false, "clipboard memory ran out")
             return false
         if service.read_length > 0:
@@ -428,12 +428,12 @@ func clip_finish_read(service: ClipService*, present: bool, failure: str):
         return
     let latin = not service.read_png and service.read_target == service.string
     let taken = service.read_buffer[..<service.read_length]
-    let answer = alloc u8[utf8_length_of_latin1(taken) if latin else taken.length] in memory.heap catch problem:
-        discard(problem)
+    let answer = new u8[utf8_length_of_latin1(taken) if latin else taken.length] --- in memory.heap catch problem:
+        _ = problem
         clip_answer(service, false, empty, "clipboard memory ran out")
         return
     if latin:
-        discard(latin1_to_utf8(taken, answer))
+        _ = latin1_to_utf8(taken, answer)
     else:
         memory.copy(answer, taken, taken.length)
     clip_answer(service, true, answer, "")

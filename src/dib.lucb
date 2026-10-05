@@ -55,7 +55,7 @@ pub func dib_to_bitmap(dib: const u8[]) -> Bitmap!:
     let start = header + masks
     if start + stride * (usize)height > dib.length or (usize)width * (usize)height * 4 > rgba_limit:
         error(malformed, "the clipboard bitmap is truncated or too large")
-    let rgba = try alloc u8[(usize)width * (usize)height * 4] in memory.heap
+    let rgba = try new u8[(usize)width * (usize)height * 4] --- in memory.heap
     var any_alpha = false
     for row in 0..<(usize)height:
         let source = start + stride * (row if top_down else (usize)height - 1 - row)
@@ -76,7 +76,7 @@ pub func dib_to_bitmap(dib: const u8[]) -> Bitmap!:
 ## A 32-bit top-down BGRA bitmap of `width` by `height` RGBA pixels, heap storage.
 pub func bitmap_to_dib(width: u32, height: u32, rgba: const u8[]) -> u8[]!:
     let count = (usize)width * (usize)height
-    let dib = try alloc u8[info_size + count * 4] in memory.heap
+    let dib = try new u8[info_size + count * 4] --- in memory.heap
     for index in 0..<info_size:
         dib[index] = 0
     write_u32(dib, 0, (u32)info_size)
