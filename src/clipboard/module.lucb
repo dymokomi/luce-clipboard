@@ -15,11 +15,10 @@ import c
 import interop
 import memory
 import platform
-import strings
 import sync
 import thread
 import time
-from luce_std import utf8
+from luce_std import collections, utf8
 from luce_window import window
 import windows_text
 from dib import dib_to_bitmap, bitmap_to_dib

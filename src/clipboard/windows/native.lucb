@@ -52,10 +52,10 @@ func win_read() -> interop.Owned[str]!:
 func win_write(text: str) -> !:
     let owner = GetActiveWindow() else error(failed, "clipboard writing requires an active application window")
     with memory.heap:
-        var terminated = try strings.Builder.create(text.length)
+        var terminated: collections.Buffer
         defer terminated.destroy()
-        try terminated.put(text)
-        let wide = try windows_text.wide((c.str)terminated.view(), failed)
+        try terminated.put_text(text)
+        let wide = try windows_text.wide(try terminated.terminated(), failed)
         defer free(wide)
         let storage = GlobalAlloc(2, wide.length * 2) else error(failed, "could not allocate clipboard storage")
         var published = false
