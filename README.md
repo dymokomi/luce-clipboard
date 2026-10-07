@@ -40,7 +40,7 @@ Native libraries it links, by platform (declared in `package.prisma`, linked onl
 
 ## Tests
 
-`./test.sh` runs every module's `test` blocks and the unit tests through the native and C backends, then the program checks under `tests/programs`. The X11 check (`tests/programs/x11`) runs on Linux with a display or Xvfb, between real processes, and with xclip when installed. It expects the compiler beside this checkout at `../luce-base/build/luce-base` (or `--base PATH`).
+`luc test` runs every module's `test` blocks and the test program `tests/x11`: the X11 clipboard between real processes, on Linux with a display or Xvfb, and with xclip when installed (`run.py` there drives it; elsewhere it is skipped).
 
 ## License
 

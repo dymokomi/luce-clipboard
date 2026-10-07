@@ -1,0 +1,16 @@
+# The X11 clipboard between real processes (run.py beside this file, which needs a display
+# or Xvfb and stock xclip as the other side): Linux only.
+from luce_std import paths, process
+import platform
+
+pub func main(arguments: list[str]) -> int!:
+    if not platform.linux:
+        print("skip: the X11 clipboard is Linux's")
+        return 0
+    let here = process.variable("LUC_TEST_DIR") else "tests/x11"
+    let base = process.variable("LUCE_BASE") else "luce-base"
+    let ran = process.run("python3", [paths.join(here, "run.py"), base])
+    print(ran.output.trim_end())
+    if ran.exit_code != 0:
+        print(ran.error_output)
+    return ran.exit_code

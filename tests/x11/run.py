@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The X11 clipboard between real processes, on Linux with an X server (a running
 display, else Xvfb): text and a PNG copied by one process and pasted by another,
-a payload past one INCR step, and xclip on either side when it is installed."""
+a payload past one INCR step, and xclip on either side when it is installed. main.luc
+runs it on Linux; clip/ is the program it builds and drives."""
 from pathlib import Path
 import os
 import platform
@@ -12,10 +13,10 @@ import sys
 import tempfile
 import time
 
-root = Path(__file__).resolve().parents[3]
+root = Path(__file__).resolve().parents[2]
 compiler = Path(sys.argv[1]).resolve()
 if platform.system() != "Linux":
-    print("SKIP x11 clipboard: not Linux")
+    print("skip: the X11 clipboard is Linux's")
     sys.exit(0)
 
 env = dict(os.environ)
@@ -23,7 +24,7 @@ server = None
 if not env.get("DISPLAY"):
     xvfb = shutil.which("Xvfb")
     if xvfb is None:
-        print("SKIP x11 clipboard: no DISPLAY and no Xvfb")
+        print("skip: no DISPLAY and no Xvfb")
         sys.exit(0)
     server = subprocess.Popen([xvfb, ":97", "-nolisten", "tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     env["DISPLAY"] = ":97"
@@ -58,7 +59,7 @@ try:
         for flags in (["--native"], ["--native", "--release"], ["--backend=c"]):
             program = str(work / "clip")
             step("build " + " ".join(flags))
-            subprocess.run([compiler, "build", root / "tests/programs/x11/main.lucb", *flags, "-o", program], cwd=root, env=env, check=True, timeout=600)
+            subprocess.run([compiler, "build", root / "tests/x11/clip/main.lucb", *flags, "-o", program], cwd=root, env=env, check=True, timeout=600)
             step("text")
             # Text, including what Latin-1 lacks, through a second process.
             text = "Luce clipboard: é € 日本 ✓"
